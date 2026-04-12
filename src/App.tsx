@@ -59,6 +59,79 @@ export default function App() {
   
   const notesContainerRef = useRef<HTMLDivElement>(null);
 
+  const parsePlaylistJson = (json: any) => {
+    let items: any[] = [];
+    if (Array.isArray(json)) {
+      items = json;
+    } else if (json.tracks && Array.isArray(json.tracks)) {
+      items = json.tracks;
+    } else if (json.songs && Array.isArray(json.songs)) {
+      items = json.songs;
+    } else if (json.data && Array.isArray(json.data)) {
+      items = json.data;
+    } else {
+      items = [json];
+    }
+    
+    const tracks: Track[] = [];
+    items.forEach(item => {
+      const ids = Array.isArray(item.track_ids) ? item.track_ids : (item.track_ids ? [item.track_ids] : (item.id ? [item.id] : []));
+      ids.forEach((id: any, index: number) => {
+        let coverUrl = "";
+        const originalUrl = item.album?.cover_url || item.cover_url || "";
+        if (originalUrl) {
+          const match = originalUrl.match(/\/([^\/]+)\.\w+$/);
+          if (match && match[1]) {
+            coverUrl = `https://api.qijieya.cn/meting/?type=pic&id=${match[1]}`;
+          } else {
+            coverUrl = originalUrl;
+          }
+        }
+
+        tracks.push({
+          id,
+          name: item.name || item.album?.name || `Track ${index + 1}`,
+          artist: item.artists?.[0]?.name || item.artist || "Unknown Artist",
+          publishTime: item.publish_time || "",
+          coverUrl
+        });
+      });
+    });
+    
+    if (tracks.length > 0) {
+      setPlaylist(tracks);
+      setCurrentIndex(0);
+      setIsPlaying(false);
+      setLyrics([]);
+      setCurrentLyric("");
+      setIsPlaylistOpen(true);
+    } else {
+      alert("No valid tracks found in JSON.");
+    }
+  };
+
+  useEffect(() => {
+    const fetchDefaultPlaylist = async () => {
+      try {
+        const response = await fetch('https://gitee.com/api/v5/repos/kiraracat/quotes/contents/music.json?ref=master');
+        if (!response.ok) {
+          throw new Error('Failed to fetch default playlist');
+        }
+        const data = await response.json();
+        if (data.content) {
+          // Decode base64 content
+          const decodedContent = decodeURIComponent(escape(atob(data.content)));
+          const json = JSON.parse(decodedContent);
+          parsePlaylistJson(json);
+        }
+      } catch (error) {
+        console.error("Error fetching default playlist:", error);
+      }
+    };
+
+    fetchDefaultPlaylist();
+  }, []);
+
   const handleJsonUpload = (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -67,55 +140,7 @@ export default function App() {
     reader.onload = (event) => {
       try {
         const json = JSON.parse(event.target?.result as string);
-        
-        let items: any[] = [];
-        if (Array.isArray(json)) {
-          items = json;
-        } else if (json.tracks && Array.isArray(json.tracks)) {
-          items = json.tracks;
-        } else if (json.songs && Array.isArray(json.songs)) {
-          items = json.songs;
-        } else if (json.data && Array.isArray(json.data)) {
-          items = json.data;
-        } else {
-          items = [json];
-        }
-        
-        const tracks: Track[] = [];
-        items.forEach(item => {
-          const ids = Array.isArray(item.track_ids) ? item.track_ids : (item.track_ids ? [item.track_ids] : (item.id ? [item.id] : []));
-          ids.forEach((id: any, index: number) => {
-            let coverUrl = "";
-            const originalUrl = item.album?.cover_url || item.cover_url || "";
-            if (originalUrl) {
-              const match = originalUrl.match(/\/([^\/]+)\.\w+$/);
-              if (match && match[1]) {
-                coverUrl = `https://api.qijieya.cn/meting/?type=pic&id=${match[1]}`;
-              } else {
-                coverUrl = originalUrl;
-              }
-            }
-
-            tracks.push({
-              id,
-              name: item.name || item.album?.name || `Track ${index + 1}`,
-              artist: item.artists?.[0]?.name || item.artist || "Unknown Artist",
-              publishTime: item.publish_time || "",
-              coverUrl
-            });
-          });
-        });
-        
-        if (tracks.length > 0) {
-          setPlaylist(tracks);
-          setCurrentIndex(0);
-          setIsPlaying(false);
-          setLyrics([]);
-          setCurrentLyric("");
-          setIsPlaylistOpen(true);
-        } else {
-          alert("No valid tracks found in JSON.");
-        }
+        parsePlaylistJson(json);
       } catch (err) {
         console.error("Failed to parse JSON", err);
         alert("Invalid JSON format");
