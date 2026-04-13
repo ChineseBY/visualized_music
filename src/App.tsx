@@ -1,6 +1,7 @@
 import React, { useRef, useState, useEffect } from "react";
 import type { ChangeEvent } from "react";
 import { LiquidBackground } from "./components/LiquidBackground";
+import { ProgressBar } from "./components/ProgressBar";
 import { Upload, Play, Pause, SkipForward, SkipBack, Music, ListMusic, Volume2, VolumeX, Sparkles } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 
@@ -42,15 +43,15 @@ export default function App() {
   const [isPlaylistOpen, setIsPlaylistOpen] = useState(false);
   const [lyrics, setLyrics] = useState<LyricLine[]>([]);
   const [currentLyric, setCurrentLyric] = useState("");
-  const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState(0);
   const [isMuted, setIsMuted] = useState(false);
   const [showError, setShowError] = useState(false);
   const [showNotes, setShowNotes] = useState(true);
   const showNotesRef = useRef(true);
   
   const analyserRef = useRef<AnalyserNode | null>(null);
-  const dataArrayRef = useRef<Float32Array | null>(null);
+  const dataArrayRef = useRef<Uint8Array | null>(null);
+  const prevSpectrumRef = useRef<Uint8Array | null>(null);
+  const fluxHistoryRef = useRef<number[]>([]);
   const animationRef = useRef<number | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const sourceNodeRef = useRef<MediaElementAudioSourceNode | null>(null);
@@ -186,7 +187,16 @@ export default function App() {
     if (audioRef.current) {
       audioRef.current.src = `https://api.qijieya.cn/meting/?type=url&id=${track.id}`;
       if (isPlaying) {
-        audioRef.current.play().catch(() => {
+        if (!audioCtxRef.current) {
+          initAudio();
+        } else if (audioCtxRef.current.state === 'suspended') {
+          audioCtxRef.current.resume();
+        }
+        audioRef.current.play().then(() => {
+          if (!animationRef.current) {
+            visualize(performance.now());
+          }
+        }).catch(() => {
           // Ignore play errors here, onError will handle the UI and skip
         });
       }
@@ -196,8 +206,6 @@ export default function App() {
   const handleTimeUpdate = () => {
     if (!audioRef.current) return;
     const time = audioRef.current.currentTime;
-    setCurrentTime(time);
-    setDuration(audioRef.current.duration || 0);
     
     let currentTxt = "";
     for (let i = 0; i < lyrics.length; i++) {
@@ -211,13 +219,6 @@ export default function App() {
     if (currentTxt !== currentLyric) {
       setCurrentLyric(currentTxt);
     }
-  };
-
-  const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!audioRef.current) return;
-    const time = Number(e.target.value);
-    audioRef.current.currentTime = time;
-    setCurrentTime(time);
   };
 
   const toggleMute = () => {
@@ -287,7 +288,7 @@ export default function App() {
     setIsPlaying(true);
   };
 
-  const initAudio = () => {
+  function initAudio() {
     if (!audioRef.current) return;
 
     try {
@@ -299,20 +300,21 @@ export default function App() {
       }
       
       const analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 4096;
+      analyser.fftSize = 1024; // 调整为和参考代码一致
       
       sourceNodeRef.current.disconnect();
       sourceNodeRef.current.connect(analyser);
       analyser.connect(audioCtx.destination);
       
       analyserRef.current = analyser;
-      dataArrayRef.current = new Float32Array(analyser.frequencyBinCount);
+      dataArrayRef.current = new Uint8Array(analyser.frequencyBinCount);
+      prevSpectrumRef.current = new Uint8Array(analyser.frequencyBinCount);
     } catch (error) {
       console.error("Error initializing audio context:", error);
     }
   };
 
-  const visualize = (time: number) => {
+  function visualize(time: number) {
     if (!analyserRef.current || !dataArrayRef.current) return;
     
     if (audioRef.current && !audioRef.current.paused) {
@@ -326,40 +328,65 @@ export default function App() {
       audioCtxRef.current.resume();
     }
     
-    if (time - lastProcessTimeRef.current < 80) return;
-    lastProcessTimeRef.current = time;
+    // 不再限制处理频率，让 requestAnimationFrame 跑满，以获得更平滑的频谱通量计算
     
-    analyserRef.current.getFloatFrequencyData(dataArrayRef.current);
+    analyserRef.current.getByteFrequencyData(dataArrayRef.current);
     
-    const sampleRate = audioCtxRef.current?.sampleRate || 44100;
-    const binWidth = sampleRate / analyserRef.current.fftSize;
-    
-    const minBin = Math.floor(200 / binWidth);
-    const maxBin = Math.floor(2000 / binWidth);
-
-    let maxVal = -Infinity;
-    let peakBin = -1;
-
-    for (let i = minBin; i <= maxBin; i++) {
-      if (dataArrayRef.current[i] > maxVal) {
-        maxVal = dataArrayRef.current[i];
-        peakBin = i;
+    // 1. 计算频谱通量 (Spectral Flux)
+    let flux = 0;
+    if (prevSpectrumRef.current) {
+      for (let i = 0; i < dataArrayRef.current.length; i++) {
+        // 全频带扫描，并对高频进行微小的增益补偿以平衡曲风
+        const weight = 1 + (i / dataArrayRef.current.length);
+        let diff = (dataArrayRef.current[i] - prevSpectrumRef.current[i]) * weight;
+        if (diff > 0) flux += diff;
       }
+      prevSpectrumRef.current.set(dataArrayRef.current);
     }
 
-    if (maxVal > -45 && time - lastDropTimeRef.current > 500) {
+    // 2. 维护平滑后的历史通量
+    const HISTORY_LEN = 50;
+    fluxHistoryRef.current.push(flux);
+    if (fluxHistoryRef.current.length > HISTORY_LEN) {
+      fluxHistoryRef.current.shift();
+    }
+    
+    const avgFlux = fluxHistoryRef.current.reduce((a, b) => a + b, 0) / fluxHistoryRef.current.length;
+    const now = Date.now();
+
+    // 3. 核心判定逻辑
+    const SENSITIVITY = 2.5;
+    const COOLDOWN = 650;
+
+    if (flux > avgFlux * SENSITIVITY && (now - lastDropTimeRef.current) > COOLDOWN) {
+      // 触发节拍时，仍然需要计算音高以决定显示的音符和大小
+      const sampleRate = audioCtxRef.current?.sampleRate || 44100;
+      const binWidth = sampleRate / analyserRef.current.fftSize;
+      const minBin = Math.floor(200 / binWidth);
+      const maxBin = Math.floor(2000 / binWidth);
+
+      let maxVal = -Infinity;
+      let peakBin = -1;
+
+      for (let i = minBin; i <= maxBin; i++) {
+        if (dataArrayRef.current[i] > maxVal) {
+          maxVal = dataArrayRef.current[i];
+          peakBin = i;
+        }
+      }
+
       const freq = peakBin * binWidth;
       const midiNote = Math.round(69 + 12 * Math.log2(freq / 440));
       const noteNames = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
       const noteName = noteNames[midiNote % 12];
 
       if (showNotesRef.current) {
-        triggerNoteDrop(noteName, time, midiNote);
+        triggerNoteDrop(noteName, now, midiNote);
       }
     }
   };
 
-  const triggerNoteDrop = (noteName: string, time: number, midiNote: number) => {
+  function triggerNoteDrop(noteName: string, time: number, midiNote: number) {
     const app = (window as any).__refractionStageApp as any;
     if (!app || !app.liquidPlane) return;
 
@@ -377,13 +404,21 @@ export default function App() {
       ny = -ny;
     }
 
+    // 尝试唤醒可能因为鼠标移出而暂停的 WebGL 渲染循环
+    if (app.play) app.play();
+    if (app.resume) app.resume();
+    if (app.isPaused) app.isPaused = false;
+
     app.liquidPlane.addDrop(nx, ny, 0.02, 0.015);
 
     const canvas = document.getElementById('refraction-canvas');
     if (canvas) {
-      canvas.dispatchEvent(new PointerEvent('pointermove', { 
+      // 触发各类鼠标事件以确保 WebGL 渲染循环被唤醒
+      canvas.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+      canvas.dispatchEvent(new MouseEvent('mousemove', { 
         clientX: window.innerWidth / 2, 
-        clientY: window.innerHeight / 2 
+        clientY: window.innerHeight / 2,
+        bubbles: true
       }));
     }
 
@@ -396,10 +431,19 @@ export default function App() {
       // midiNote 通常在 40 (低音) 到 90 (高音) 之间
       const sizeRem = 1.5 + Math.max(0, Math.min(1, (midiNote - 40) / 50)) * 3; // 范围 1.5rem 到 4.5rem
       
-      noteEl.className = 'absolute font-black pointer-events-none drop-shadow-[0_2px_4px_rgba(0,0,0,0.3)] note-animation z-0';
+      noteEl.className = 'absolute font-black pointer-events-none note-animation z-0';
       noteEl.style.fontSize = `${sizeRem}rem`;
       noteEl.style.color = NOTE_COLORS[noteName] || '#fff';
-      noteEl.style.webkitTextStroke = '1px rgba(255,255,255,0.6)';
+      
+      // 3D 立体阴影效果
+      noteEl.style.textShadow = `
+        0px 1px 0px rgba(255,255,255,0.4),
+        0px 2px 0px rgba(255,255,255,0.3),
+        0px 3px 0px rgba(255,255,255,0.2),
+        0px 4px 0px rgba(0,0,0,0.1),
+        0px 5px 4px rgba(0,0,0,0.3),
+        0px 10px 10px rgba(0,0,0,0.2)
+      `;
 
       const leftPct = (nx + 1) / 2 * 100;
       const topPct = (-ny + 1) / 2 * 100;
@@ -479,10 +523,17 @@ export default function App() {
       <div className="absolute top-6 right-6 z-50 flex items-center gap-4">
         <button 
           onClick={toggleNotes}
-          className={`p-3 rounded-full backdrop-blur-md transition-all shadow-lg border ${showNotes ? 'bg-white/20 border-white/30 text-white hover:bg-white/30' : 'bg-black/20 border-white/10 text-white/50 hover:bg-black/30'}`}
+          className="p-3 rounded-full backdrop-blur-md transition-all shadow-lg border bg-black/20 border-white/10 text-white/50 hover:bg-black/30"
           title={showNotes ? "Hide Notes" : "Show Notes"}
         >
-          <Sparkles className="w-5 h-5" />
+          <div className="relative w-5 h-5">
+            <Sparkles className="w-full h-full" />
+            {!showNotes && (
+              <svg className="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="3" y1="3" x2="21" y2="21" />
+              </svg>
+            )}
+          </div>
         </button>
       </div>
 
@@ -500,7 +551,7 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      <div ref={notesContainerRef} className={`absolute inset-0 w-full h-full pointer-events-none z-0 overflow-hidden transition-opacity duration-500 ${showNotes ? 'opacity-100' : 'opacity-0'}`} />
+      <div ref={notesContainerRef} className={`absolute inset-0 w-full h-full pointer-events-none z-0 overflow-hidden transition-opacity duration-500 ${showNotes ? 'opacity-100' : 'opacity-0'}`} style={{ perspective: '1000px' }} />
 
       {/* 居中显示的单行歌词 */}
       <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10 px-8">
@@ -578,17 +629,7 @@ export default function App() {
 
               {/* Progress Bar */}
               <div className="flex items-center gap-2 mt-1">
-                <input 
-                  type="range" 
-                  min={0} 
-                  max={duration || 100} 
-                  value={currentTime} 
-                  onChange={handleSeek}
-                  className="w-full h-1.5 bg-gray-200 rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:bg-blue-600 [&::-webkit-slider-thumb]:rounded-full"
-                  style={{
-                    background: `linear-gradient(to right, #2563eb ${(currentTime / (duration || 1)) * 100}%, #e5e7eb ${(currentTime / (duration || 1)) * 100}%)`
-                  }}
-                />
+                <ProgressBar audioRef={audioRef} />
               </div>
 
               {/* Controls */}

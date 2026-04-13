@@ -10,14 +10,16 @@ export function LiquidBackground({ imageUrl = "/background.png" }: LiquidBackgro
   useEffect(() => {
     if (!canvasRef.current) return;
 
-    const script = document.createElement("script");
-    script.type = "module";
-    script.textContent = `
-      import LiquidBackground from 'https://cdn.jsdelivr.net/npm/threejs-components@0.0.30/build/backgrounds/liquid1.min.js';
-      const canvas = document.getElementById('refraction-canvas');
-      if (canvas) {
-        const app = LiquidBackground(canvas);
-        app.loadImage('${imageUrl}');
+    let app: any;
+
+    import('https://cdn.jsdelivr.net/npm/threejs-components@0.0.30/build/backgrounds/liquid1.min.js')
+      .then((module) => {
+        const LiquidBackground = module.default;
+        if (!canvasRef.current) return;
+        
+        app = LiquidBackground(canvasRef.current);
+        app.loadImage(imageUrl);
+        
         // 调整参数以获得更好的水波纹和折射效果，降低中心高光
         app.liquidPlane.material.metalness = 0.1;
         app.liquidPlane.material.roughness = 0.6;
@@ -29,7 +31,7 @@ export function LiquidBackground({ imageUrl = "/background.png" }: LiquidBackgro
         // 2. 允许点击产生波纹（onClick 的 strength 为 0.05）
         // 3. 允许音乐可视化产生的波纹
         const originalAddDrop = app.liquidPlane.addDrop.bind(app.liquidPlane);
-        app.liquidPlane.addDrop = (x, y, radius, strength) => {
+        app.liquidPlane.addDrop = (x: number, y: number, radius: number, strength: number) => {
           if (strength === 0.0025) {
             return; // 忽略鼠标滑过的波纹
           }
@@ -37,15 +39,15 @@ export function LiquidBackground({ imageUrl = "/background.png" }: LiquidBackgro
         };
 
         window.__refractionStageApp = app;
-      }
-    `;
-    document.body.appendChild(script);
+      })
+      .catch(console.error);
 
     return () => {
-      if (window.__refractionStageApp?.dispose) {
+      if (app && app.dispose) {
+        app.dispose();
+      } else if (window.__refractionStageApp?.dispose) {
         window.__refractionStageApp.dispose();
       }
-      script.parentNode?.removeChild(script);
     };
   }, [imageUrl]);
 
