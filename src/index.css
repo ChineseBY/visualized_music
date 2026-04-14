@@ -1,0 +1,39 @@
+@import "tailwindcss";
+
+@font-face {
+  font-family: 'GenshinFont';
+  src: url('/GenshinFont.woff2') format('woff2'),
+       url('/原神字体_汉仪文黑85W_Heavy.woff2') format('woff2');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
+@layer utilities {
+  .hide-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .hide-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
+
+@keyframes floatUpAndFade {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.5) rotateX(45deg) rotateY(-30deg);
+  }
+  15% {
+    opacity: 1;
+    transform: translate(-50%, -60%) scale(1.2) rotateX(0deg) rotateY(0deg);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -150%) scale(1) rotateX(-45deg) rotateY(30deg);
+  }
+}
+
+.note-animation {
+  animation: floatUpAndFade 2s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+}
