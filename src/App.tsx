@@ -61,6 +61,23 @@ export default function App() {
   const lastProcessTimeRef = useRef<number>(0);
   
   const notesContainerRef = useRef<HTMLDivElement>(null);
+  const playlistContainerRef = useRef<HTMLDivElement>(null);
+  const prevPlaylistOpenRef = useRef(false);
+
+  // Auto-scroll playlist to current track
+  useEffect(() => {
+    if (isPlaylistOpen && playlistContainerRef.current) {
+      const activeItem = playlistContainerRef.current.querySelector('[data-active="true"]');
+      if (activeItem) {
+        const justOpened = !prevPlaylistOpenRef.current;
+        activeItem.scrollIntoView({ 
+          behavior: justOpened ? 'auto' : 'smooth', 
+          block: 'center' 
+        });
+      }
+    }
+    prevPlaylistOpenRef.current = isPlaylistOpen;
+  }, [isPlaylistOpen, currentIndex]);
 
   const parsePlaylistJson = (json: any) => {
     let items: any[] = [];
@@ -192,7 +209,11 @@ export default function App() {
             const min = parseInt(match[1], 10);
             const sec = parseFloat(match[2]);
             const txt = match[3].trim();
-            if (txt) parsed.push({ time: min * 60 + sec, text: txt });
+            if (txt) {
+              // Advance lyric time by 0.4 seconds to compensate for display latency
+              const time = Math.max(0, min * 60 + sec - 0.4);
+              parsed.push({ time, text: txt });
+            }
           }
         }
         setLyrics(parsed);
@@ -680,10 +701,11 @@ export default function App() {
                     exit={{ height: 0, opacity: 0 }}
                     className="overflow-hidden flex flex-col"
                   >
-                    <div className="mt-2 max-h-60 overflow-y-auto flex flex-col gap-1 pr-1 custom-scrollbar">
+                    <div ref={playlistContainerRef} className="mt-2 max-h-60 overflow-y-auto flex flex-col gap-1 pr-1 custom-scrollbar">
                       {playlist.map((track, index) => (
                         <div 
                           key={`${track.id}-${index}`} 
+                          data-active={index === currentIndex}
                           onClick={() => playTrack(index)} 
                           className={`flex items-center gap-3 p-2 rounded-xl cursor-pointer transition-colors ${index === currentIndex ? 'bg-gray-100 shadow-sm' : 'hover:bg-gray-50'}`}
                         >
@@ -743,9 +765,9 @@ export default function App() {
                           <p className="text-xs font-bold text-gray-800 mb-3 px-1">Select Background</p>
                           <div className="grid grid-cols-3 gap-2">
                             {[
-                              { id: 'bg1', url: '/background.png' },
-                              { id: 'bg2', url: '/bg_02.jpg' },
-                              { id: 'bg3', url: '/bg_03.jpg' }
+                              { id: 'bg1', url: '/background.png', thumb: '/bg_s.jpg' },
+                              { id: 'bg2', url: '/bg_02.jpg', thumb: '/bg_02_s.jpg' },
+                              { id: 'bg3', url: '/bg_03.jpg', thumb: '/bg_03_s.jpg' }
                             ].map((bg) => (
                               <button
                                 key={bg.id}
@@ -755,7 +777,7 @@ export default function App() {
                                 }}
                                 className={`relative aspect-video rounded-lg overflow-hidden border-2 transition-all ${currentBg === bg.url ? 'border-blue-500 scale-105 shadow-md' : 'border-transparent hover:border-gray-300'}`}
                               >
-                                <img src={bg.url} alt="bg thumbnail" className="w-full h-full object-cover" />
+                                <img src={bg.thumb} alt="bg thumbnail" className="w-full h-full object-cover" />
                               </button>
                             ))}
                           </div>
